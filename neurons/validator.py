@@ -28,8 +28,9 @@ import hashlib
 import numpy as np
 import yaml
 import multiprocessing
+import requests
 from asyncio import AbstractEventLoop
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Any, Optional
 
 import bittensor as bt
 import math
@@ -157,6 +158,15 @@ class Validator:
 
         # The wallet holds the cryptographic key pairs for the validator.
         self._wallet = bt.wallet(config=self.config)
+
+        # Initialize validator-token-gateway auth and pub/sub connection
+        self.jwt_token = self._authenticate_validator_gateway()
+        self.pubsub_token = self._get_pubsub_token()
+        self.pubsub_client = self._initialize_pubsub_client()
+
+        # Subscribe to system topic
+        self._subscribe_to_system_topic()
+
         bt.logging.info(f"Wallet: {self.wallet}")
 
         # The subtensor is our connection to the Bittensor blockchain.
@@ -355,7 +365,7 @@ class Validator:
                     else:
                         score = 0
                         self.stats[uid]["own_score"] = True  # or "no"
-                
+
                 if hotkey in self.penalized_hotkeys:
                     score = 0
                 self.stats[uid]["score"] = score*100
@@ -1221,6 +1231,17 @@ class Validator:
                         self.blocks_done.clear()
                         self.blocks_done.add(self.current_block)
 
+                    # Refresh tokens periodically (every 30 minutes)
+                    if self.current_block % 600 == 0:  # Approximately every 30 minutes at 3s block time
+                        bt.logging.info("Refreshing validator-token-gateway tokens")
+                        self.jwt_token = self._authenticate_validator_gateway()
+                        self.pubsub_token = self._get_pubsub_token()
+                        if self.pubsub_client:
+                            # Reinitialize client with new token
+                            self.pubsub_client = self._initialize_pubsub_client()
+                            # Resubscribe to system topic
+                            self._subscribe_to_system_topic()
+
                 bt.logging.info(
                     (
                         f"Block:{self.current_block} | "
@@ -1247,6 +1268,271 @@ class Validator:
                 bt.logging.success("Keyboard interrupt detected. Exiting validator.")
                 exit()
 
+    def _get_network_config(self):
+        """
+        Get network-specific configuration values
+
+        Returns:
+            dict: Dictionary containing domain and project_id for the current network
+        """
+        if self.config.subtensor.network == "test":
+            return {
+                "domain": "https://validator-token-gateway-auth-development-pufph5srwa-uc.a.run.app",
+                "project_id": "ni-sn27-frontend-dev"
+            }
+        else:  # finney or other production networks
+            return {
+                "domain": "https://validator-token-gateway-auth-production-pufph5srwa-uc.a.run.app",
+                "project_id": "ni-sn27-frontend-dev"
+            }
+
+    def _authenticate_validator_gateway(self):
+        """Authenticate with validator-token-gateway to get JWT token"""
+        # Message to sign
+        message = f"Authenticate to Bittensor Subnet {self.config.netuid}"
+
+        # Sign the message with validator's hotkey
+        signature = self.wallet.hotkey.sign(message).hex()
+
+        # Create auth header
+        auth_header = f"Bittensor {self.wallet.hotkey.ss58_address}:{signature}"
+
+        # Get domain for current network
+        network_config = self._get_network_config()
+        domain = network_config["domain"]
+
+        try:
+            response = requests.post(
+                f"{domain}/auth/token",
+                headers={"Authorization": auth_header}
+            )
+            response.raise_for_status()
+            jwt_token = response.json().get("token")
+            bt.logging.info(f"Successfully authenticated with validator-token-gateway on {self.config.subtensor.network} network")
+            return jwt_token
+        except Exception as e:
+            bt.logging.error(f"Failed to authenticate with validator-token-gateway: {e}")
+            return None
+
+    def _get_pubsub_token(self):
+        """Get Google Cloud Pub/Sub impersonation token"""
+        if not self.jwt_token:
+            bt.logging.error("Cannot get Pub/Sub token: No JWT token available")
+            return None
+
+        # Get domain for current network
+        network_config = self._get_network_config()
+        domain = network_config["domain"]
+
+        try:
+            response = requests.post(
+                f"{domain}/auth/pubsub-token",
+                headers={"Authorization": f"Bearer {self.jwt_token}"}
+            )
+            response.raise_for_status()
+            pubsub_token = response.json().get("token")
+            bt.logging.info(f"Successfully obtained Pub/Sub impersonation token for {self.config.subtensor.network} network")
+            return pubsub_token
+        except Exception as e:
+            bt.logging.error(f"Failed to get Pub/Sub token: {e}")
+            return None
+
+    def _initialize_pubsub_client(self):
+        """Initialize Google Cloud Pub/Sub client with impersonation token"""
+        if not self.pubsub_token:
+            bt.logging.error("Cannot initialize Pub/Sub client: No token available")
+            return None
+
+        try:
+            from google.cloud import pubsub_v1
+            from google.auth import credentials
+
+            # Create custom credentials with the token
+            class ImpersonationCredentials(credentials.Credentials):
+                def __init__(self, token):
+                    self.token = token
+
+                def apply(self, headers):
+                    headers["Authorization"] = f"Bearer {self.token}"
+                    return headers
+
+                def before_request(self, *args, **kwargs):
+                    pass
+
+            # Create publisher and subscriber clients
+            publisher = pubsub_v1.PublisherClient(
+                credentials=ImpersonationCredentials(self.pubsub_token)
+            )
+            subscriber = pubsub_v1.SubscriberClient(
+                credentials=ImpersonationCredentials(self.pubsub_token)
+            )
+
+            bt.logging.info("Successfully initialized Pub/Sub client")
+            return {"publisher": publisher, "subscriber": subscriber}
+        except Exception as e:
+            bt.logging.error(f"Failed to initialize Pub/Sub client: {e}")
+            return None
+
+    def _subscribe_to_system_topic(self):
+        """Subscribe to system topic for network-wide messages"""
+        if not self.pubsub_client:
+            bt.logging.error("Cannot subscribe: No Pub/Sub client available")
+            return
+
+        try:
+            # Get project ID for current network
+            network_config = self._get_network_config()
+            project_id = network_config["project_id"]
+
+            # Use a centralized system topic for all validators
+            system_topic = "system"
+            # Create a unique subscription name for this validator
+            subscription_name = f"{system_topic}-sub-{self.wallet.hotkey.ss58_address[:8]}"
+            subscription_path = self.pubsub_client["subscriber"].subscription_path(
+                project_id, subscription_name
+            )
+
+            # Get the topic path
+            topic_path = self.pubsub_client["subscriber"].topic_path(
+                project_id, system_topic
+            )
+
+            # Check if subscription exists, create if it doesn't
+            try:
+                self.pubsub_client["subscriber"].get_subscription(subscription=subscription_path)
+                bt.logging.info(f"Using existing subscription: {subscription_path}")
+            except Exception:
+                bt.logging.info(f"Creating new subscription: {subscription_path}")
+                self.pubsub_client["subscriber"].create_subscription(
+                    name=subscription_path, topic=topic_path
+                )
+
+            # Define callback for received messages
+            def callback(message):
+                try:
+                    data = json.loads(message.data.decode("utf-8"))
+                    bt.logging.info(f"Received system message: {data}")
+
+                    # Process message based on type
+                    message_type = data.get("type")
+
+                    if message_type == "network_update":
+                        # Handle network-wide updates
+                        self._handle_network_update(data)
+                    elif message_type == "validator_command":
+                        # Handle validator-specific commands
+                        if "target_validator" in data:
+                            # Check if this command is for this validator
+                            if data["target_validator"] == self.wallet.hotkey.ss58_address or data["target_validator"] == "all":
+                                self._handle_validator_command(data)
+                        else:
+                            # If no target specified, assume it's for all validators
+                            self._handle_validator_command(data)
+                    elif message_type == "security_alert":
+                        # Handle security alerts
+                        self._handle_security_alert(data)
+                    else:
+                        bt.logging.warning(f"Unknown message type: {message_type}")
+
+                    # Acknowledge the message
+                    message.ack()
+                except Exception as e:
+                    bt.logging.error(f"Error processing message: {e}")
+                    message.nack()
+
+            # Start subscriber in background
+            self.pubsub_client["subscriber"].subscribe(
+                subscription_path, callback=callback
+            )
+            bt.logging.info(f"Subscribed to system topic via {subscription_path} on {self.config.subtensor.network} network")
+        except Exception as e:
+            bt.logging.error(f"Failed to subscribe to system topic: {e}")
+
+    def _handle_network_update(self, data: Dict[str, Any]):
+        """Handle network update messages"""
+        update_type = data.get("update_type")
+        if update_type == "version":
+            # Handle version update notification
+            new_version = data.get("version")
+            bt.logging.info(f"Network update: New version {new_version} available")
+            # Trigger update process if auto_update is enabled
+            if self.config.auto_update and new_version:
+                try_update()
+        elif update_type == "config":
+            # Handle configuration update
+            bt.logging.info("Network update: Configuration update received")
+            # Apply new configuration
+            self._apply_config_update(data.get("config", {}))
+
+    def _handle_validator_command(self, data: Dict[str, Any]):
+        """Handle validator-specific command messages"""
+        command = data.get("command")
+        if command == "sync_metagraph":
+            bt.logging.info("Command received: Syncing metagraph")
+            self.init_local()
+        elif command == "reset_scores":
+            bt.logging.info("Command received: Resetting scores")
+            self.init_scores()
+        elif command == "set_weights":
+            bt.logging.info("Command received: Setting weights")
+            self.set_weights()
+
+    def _handle_security_alert(self, data: Dict[str, Any]):
+        """Handle security alert messages"""
+        alert_type = data.get("alert_type")
+        if alert_type == "blacklist_update":
+            # Update blacklisted hotkeys/coldkeys
+            new_blacklist = data.get("hotkeys", [])
+            bt.logging.warning(f"Security alert: Updating blacklist with {len(new_blacklist)} hotkeys")
+            self.blacklist_hotkeys.update(new_blacklist)
+
+    def _apply_config_update(self, config_data: Dict[str, Any]):
+        """Apply configuration updates from network message"""
+        # Example: update batch sizes
+        if "validator_specs_batch_size" in config_data:
+            self.validator_specs_batch_size = config_data["validator_specs_batch_size"]
+            bt.logging.info(f"Updated specs batch size to {self.validator_specs_batch_size}")
+
+        if "validator_challenge_batch_size" in config_data:
+            self.validator_challenge_batch_size = config_data["validator_challenge_batch_size"]
+            bt.logging.info(f"Updated challenge batch size to {self.validator_challenge_batch_size}")
+
+    async def publish_to_system_topic_async(self, message_data: Dict[str, Any]) -> Optional[str]:
+        """Publish message to the centralized system topic asynchronously"""
+        if not self.pubsub_client:
+            bt.logging.error("Cannot publish: No Pub/Sub client available")
+            return None
+
+        try:
+            # Get project ID for current network
+            network_config = self._get_network_config()
+            project_id = network_config["project_id"]
+
+            # Use a centralized system topic for all validators
+            system_topic = "system"
+            topic_path = self.pubsub_client["publisher"].topic_path(project_id, system_topic)
+
+            # Add sender information to the message
+            message_data["sender"] = {
+                "hotkey": self.wallet.hotkey.ss58_address,
+                "timestamp": time.time()
+            }
+
+            # Convert message to JSON
+            message_json = json.dumps(message_data).encode("utf-8")
+
+            # Use run_in_executor to make the blocking publish call asynchronous
+            loop = asyncio.get_running_loop()
+            future = await loop.run_in_executor(
+                None,
+                lambda: self.pubsub_client["publisher"].publish(topic_path, message_json).result()
+            )
+
+            bt.logging.info(f"Published message to system topic on {self.config.subtensor.network} network, ID: {future}")
+            return future
+        except Exception as e:
+            bt.logging.error(f"Failed to publish to system topic: {e}")
+            return None
 
 def main():
     """
