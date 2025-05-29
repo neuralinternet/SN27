@@ -825,7 +825,7 @@ class Validator:
             except requests.exceptions.RequestException as e:
                 bt.logging.info(f"{hotkey}: Error connecting to port {external_port}: {e}")
                 return (hotkey, None, -1)
-            
+
             # Step 3: Hash Check
             local_hash = compute_script_hash(miner_script_path)
             bt.logging.trace(f"{hotkey}: [Step 1] Local script hash computed successfully.")
