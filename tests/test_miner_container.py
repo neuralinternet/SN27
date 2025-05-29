@@ -144,7 +144,10 @@ class TestRunContainer:
 
         mock_open_fn.assert_called_with('allocation_key', 'w')
         expected_info = base64.b64encode(b"encrypted_data").decode("utf-8")
-        assert result == {"status": True, "info": expected_info}
+        assert result
+        assert result["status"] is True
+        assert result["message"]
+        assert result["info"] == expected_info
 
 
 class TestCheckContainer:
@@ -205,7 +208,9 @@ class TestPauseContainer:
         mock_get_docker.return_value = (client, [running_container])
         result = pause_container(allocation_key_fixture)
         running_container.pause.assert_called_once()
-        assert result == {"status": True}
+        assert result
+        assert result["status"] is True
+        assert result["message"]
 
     @patch('neurons.Miner.container.retrieve_allocation_key', return_value=None)
     def test_pause_container_no_allocation_key(self, mock_retrieve_allocation_key):
@@ -214,7 +219,9 @@ class TestPauseContainer:
         Returns False if no allocation key is retrieved.
         """
         result = pause_container("test_public_key")
-        assert result == {"status": False}
+        assert result
+        assert result["status"] is False
+        assert result["message"] == "Failed to retrieve allocation key."
 
     @patch('neurons.Miner.container.retrieve_allocation_key')
     def test_pause_container_key_mismatch(self, mock_retrieve_allocation_key, allocation_key_fixture):
@@ -224,7 +231,9 @@ class TestPauseContainer:
         """
         mock_retrieve_allocation_key.return_value = allocation_key_fixture
         result = pause_container("invalid_key")
-        assert result == {"status": False}
+        assert result
+        assert result["status"] is False
+        assert result["message"] == "Permission denied."
 
     @patch('neurons.Miner.container.get_docker')
     @patch('neurons.Miner.container.retrieve_allocation_key')
@@ -239,7 +248,9 @@ class TestPauseContainer:
         mock_get_docker.return_value = (client, [running_container])
         mock_retrieve_allocation_key.return_value = allocation_key_fixture
         result = pause_container(allocation_key_fixture)
-        assert result == {"status": False}
+        assert result
+        assert result["status"] is False
+        assert result["message"] == "Unable to find container"
 
     @patch('neurons.Miner.container.get_docker', side_effect=Exception("Test error"))
     @patch('neurons.Miner.container.retrieve_allocation_key')
@@ -250,7 +261,13 @@ class TestPauseContainer:
         """
         mock_retrieve_allocation_key.return_value = allocation_key_fixture
         result = pause_container(allocation_key_fixture)
-        assert result == {"status": False}
+        assert result
+        assert result["status"] is False
+        assert result["exception"] == "Exception"
+        assert result["message"] == "Error pausing container Test error"
+        assert result["traceback"]
+        assert result["traceback"][0] == "Traceback (most recent call last):\n"
+        assert result["traceback"][-1] == "Exception: Test error\n"
 
 
 class TestUnpauseContainer:
@@ -267,7 +284,9 @@ class TestUnpauseContainer:
         mock_get_docker.return_value = (client, [running_container])
         result = unpause_container(allocation_key_fixture)
         running_container.unpause.assert_called_once()
-        assert result == {"status": True}
+        assert result
+        assert result["status"] is True
+        assert result["message"]
 
     @patch('neurons.Miner.container.retrieve_allocation_key', return_value=None)
     def test_unpause_container_no_allocation_key(self, mock_retrieve_allocation_key):
@@ -276,7 +295,9 @@ class TestUnpauseContainer:
         Returns False if no allocation key is retrieved.
         """
         result = unpause_container("test_public_key")
-        assert result == {"status": False}
+        assert result
+        assert result["status"] is False
+        assert result["message"] == "Failed to retrieve allocation key."
 
     @patch('neurons.Miner.container.retrieve_allocation_key')
     def test_unpause_container_key_mismatch(self, mock_retrieve_allocation_key, allocation_key_fixture):
@@ -286,7 +307,9 @@ class TestUnpauseContainer:
         """
         mock_retrieve_allocation_key.return_value = allocation_key_fixture
         result = unpause_container("invalid_key")
-        assert result == {"status": False}
+        assert result
+        assert result["status"] is False
+        assert result["message"] == "Permission denied."
 
     @patch('neurons.Miner.container.get_docker')
     @patch('neurons.Miner.container.retrieve_allocation_key')
@@ -301,7 +324,9 @@ class TestUnpauseContainer:
         mock_get_docker.return_value = (client, [running_container])
         mock_retrieve_allocation_key.return_value = allocation_key_fixture
         result = unpause_container(allocation_key_fixture)
-        assert result == {"status": False}
+        assert result
+        assert result["status"] is False
+        assert result["message"] == "Unable to find container"
 
     @patch('neurons.Miner.container.get_docker', side_effect=Exception("Test error"))
     @patch('neurons.Miner.container.retrieve_allocation_key')
@@ -312,7 +337,12 @@ class TestUnpauseContainer:
         """
         mock_retrieve_allocation_key.return_value = allocation_key_fixture
         result = unpause_container(allocation_key_fixture)
-        assert result == {"status": False}
+        assert result
+        assert result["status"] is False
+        assert result["exception"] == "Exception"
+        assert result["message"] == "Error unpausing container Test error"
+        assert result["traceback"]
+        assert result["traceback"][0] == "Traceback (most recent call last):\n"
 
 
 class TestGetDocker:
@@ -365,7 +395,6 @@ class TestKillContainer:
         running_test_container.wait.assert_called_once()
         running_test_container.remove.assert_called_once()
         docker_client_with_test_container.images.prune.assert_called_once_with(filters={"dangling": True})
-        assert result is True
 
     @patch('neurons.Miner.container.get_docker')
     def test_kill_container_test_not_running(self, mock_get_docker, docker_client_with_test_container, running_test_container):
@@ -381,7 +410,6 @@ class TestKillContainer:
         running_test_container.wait.assert_not_called()
         running_test_container.remove.assert_called_once()
         docker_client_with_test_container.images.prune.assert_called_once_with(filters={"dangling": True})
-        assert result is True
 
     @patch('neurons.Miner.container.get_docker')
     def test_kill_container_regular_running(self, mock_get_docker, docker_client_with_container, running_container):
@@ -391,12 +419,13 @@ class TestKillContainer:
         """
         docker_client_with_container.images.prune = MagicMock()
         mock_get_docker.return_value = (docker_client_with_container, [running_container])
-        result = kill_container(True)
+
+        kill_container(True)
+
         running_container.exec_run.assert_called_once_with(cmd="kill -15 1")
         running_container.wait.assert_called_once()
         running_container.remove.assert_called_once()
         docker_client_with_container.images.prune.assert_called_once_with(filters={"dangling": True})
-        assert result is True
 
     @patch('neurons.Miner.container.get_docker')
     def test_kill_container_regular_not_running(self, mock_get_docker, docker_client_with_container, exited_container):
@@ -406,12 +435,13 @@ class TestKillContainer:
         """
         docker_client_with_container.images.prune = MagicMock()
         mock_get_docker.return_value = (docker_client_with_container, [exited_container])
-        result = kill_container(True)
+
+        kill_container(True)
+
         exited_container.exec_run.assert_not_called()
         exited_container.wait.assert_not_called()
         exited_container.remove.assert_called_once()
         docker_client_with_container.images.prune.assert_called_once_with(filters={"dangling": True})
-        assert result is True
 
     def test_kill_container_deregister_false(self):
         """
@@ -431,7 +461,9 @@ class TestKillContainer:
         containers = [mock_regular_container, mock_test_container]
 
         with patch('neurons.Miner.container.get_docker', return_value=(client, containers)):
+
             result = kill_container(deregister=False)
+
             mock_test_container.exec_run.assert_called_once_with(cmd="kill -15 1")
             mock_test_container.wait.assert_called_once()
             mock_test_container.remove.assert_called_once()
@@ -439,7 +471,6 @@ class TestKillContainer:
             mock_regular_container.wait.assert_not_called()
             mock_regular_container.remove.assert_not_called()
             client.images.prune.assert_called_once_with(filters={"dangling": True})
-            assert result is True
 
     def test_kill_container_deregister_true_with_both_containers(self):
         """
@@ -459,7 +490,9 @@ class TestKillContainer:
         containers = [mock_regular_container, mock_test_container]
 
         with patch('neurons.Miner.container.get_docker', return_value=(client, containers)):
+
             result = kill_container(deregister=True)
+
             mock_test_container.exec_run.assert_called_once_with(cmd="kill -15 1")
             mock_test_container.wait.assert_called_once()
             mock_test_container.remove.assert_called_once()
@@ -467,7 +500,6 @@ class TestKillContainer:
             mock_regular_container.wait.assert_called_once()
             mock_regular_container.remove.assert_called_once()
             client.images.prune.assert_called_once_with(filters={"dangling": True})
-            assert result is True
 
     def test_kill_container_not_found(self):
         """
@@ -485,7 +517,6 @@ class TestKillContainer:
             mock_container.wait.assert_not_called()
             mock_container.remove.assert_not_called()
             client.images.prune.assert_called_once_with(filters={"dangling": True})
-            assert result is True
 
     def test_kill_container_exception(self):
         """
@@ -493,8 +524,8 @@ class TestKillContainer:
         Returns False when get_docker raises an exception.
         """
         with patch('neurons.Miner.container.get_docker', side_effect=Exception("Test error")):
-            result = kill_container(True)
-            assert result is False
+            with pytest.raises(Exception):
+                result = kill_container(True)
 
 
 class TestSetDockerBaseSize:
