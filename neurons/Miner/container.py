@@ -255,7 +255,7 @@ def build_check_container(image_name: str, container_name: str):
     try:
         client = docker.from_env()
         dockerfile = '''
-        FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+        FROM pytorch/pytorch:2.7.0-cuda12.6-cudnn9-runtime
         CMD echo "compute-subnet"
         '''
 
@@ -308,7 +308,7 @@ def build_sample_container():
         # Step 1: Build the Docker image with an SSH server
         # Step 1: Build the Docker image with SSH server and install numpy
         dockerfile_content = f"""
-        FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+        FROM pytorch/pytorch:2.7.0-cuda12.6-cudnn9-runtime
 
         # Prevent interactive prompts during package installation
         ENV DEBIAN_FRONTEND=noninteractive

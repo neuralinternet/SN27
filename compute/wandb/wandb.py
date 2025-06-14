@@ -375,8 +375,14 @@ class ComputeWandb:
                     for uid, data in stats_data.items():
                         # If you also want allocated == True, re-enable that check:
                         # if data.get("own_score") is True and data.get("allocated") is True:
-                        if data.get("own_score") is True:
+                        if data.get("own_score") is True and data.get("score", 0) > 0 and data.get("allocated") is True:
                             aggregator.setdefault(uid, []).append(data)
+                            # Pull out gpu_specs for logging
+                            gs = data.get("gpu_specs") or {}
+                            bt.logging.trace(
+                                f"Added stats for UID {uid} from validator hotkey {run.config['hotkey']} | "
+                                f"GPU specs: {gs.get('gpu_name', 'N/A')} x {gs.get('num_gpus', 0)}"
+                            )
 
             except Exception as e:
                 bt.logging.info(f"Run ID: {run.id}, Name: {run.name}, Error: {e}")

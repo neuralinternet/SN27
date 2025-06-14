@@ -95,7 +95,7 @@ class Miner:
     _axon: bt.axon
 
     @property
-    def wallet(self) -> bt.wallet:
+    def wallet(self) -> bt.wallet: # type: ignore
         return self._wallet
 
     @property
