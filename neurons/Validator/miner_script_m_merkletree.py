@@ -408,7 +408,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    health_check_thread = serve_health_check(args.port)
+    serve_health_check(args.port)
     print(f"Health check server started on port {args.port}")
 
     try:
